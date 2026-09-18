@@ -26,6 +26,23 @@ async function expand(query: string): Promise<string[] | null> {
   return [...out];
 }
 
+/**
+ * jsonb columns can arrive as an array, or as a string holding one, depending
+ * on how the row was written. The interface should never crash over that.
+ */
+function asArray(v: any): any[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export async function POST(req: Request) {
   try {
     const b = await req.json();
@@ -68,9 +85,9 @@ export async function POST(req: Request) {
         subject: r.subject,
         snippet: r.snippet,
         category: r.category,
-        events: r.events,
-        tags: r.tags,
-        attachments: r.attachments,
+        events: asArray(r.events),
+        tags: asArray(r.tags),
+        attachments: asArray(r.attachments),
         hasAttachment: r.has_real_attachment,
         link: gmailLink(r.message_id),
       })),

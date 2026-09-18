@@ -138,7 +138,8 @@ async function runOnce() {
         subject: parsed.subject || null,
         body_text: parsed.text || parsed.html?.replace(/<[^>]+>/g, ' ') || '',
         has_real_attachment: atts.length > 0,
-        attachments: JSON.stringify(atts),
+        attachments: sql.json(atts),   // sql.json, not JSON.stringify: postgres.js
+                                       // encodes for jsonb itself and would double-wrap a string
         attachment_text: await pdfText(parsed),
       });
 
