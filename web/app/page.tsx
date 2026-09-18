@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 type Tag = { id: number; name: string; color: string; uses?: number };
 type Rec = {
@@ -11,40 +11,55 @@ type Rec = {
   fromAddr: string;
   subject: string | null;
   snippet: string;
+  body: string;
   category: string | null;
+  events: any[];
   tags: Tag[];
   attachments: { filename: string }[];
   hasAttachment: boolean;
   link: string;
 };
 
-const CATEGORIES = ['logistics', 'legal', 'hostile', 'fluff'];
+const CATS = [
+  { key: 'logistics', label: 'Logistics', color: 'var(--moss)' },
+  { key: 'legal', label: 'Legal', color: 'var(--blue)' },
+  { key: 'hostile', label: 'Hostile', color: 'var(--oxblood)' },
+  { key: 'fluff', label: 'Nothing in it', color: 'var(--ink-3)' },
+];
 
-const day = (d?: string | null) =>
-  d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+const dayLabel = (d: string) =>
+  new Date(d).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const shortDate = (d?: string | null) =>
+  d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '';
+const longDate = (d?: string | null) =>
+  d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
 
 export default function Page() {
+  const [mode, setMode] = useState<'feed' | 'search'>('feed');
+
   const [query, setQuery] = useState('');
-  const [from, setFrom] = useState('');
+  const [sender, setSender] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [tagIds, setTagIds] = useState<number[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [attachedOnly, setAttachedOnly] = useState<boolean | null>(null);
+  const [cats, setCats] = useState<string[]>([]);
+  const [attached, setAttached] = useState<boolean | null>(null);
 
   const [tags, setTags] = useState<Tag[]>([]);
   const [rows, setRows] = useState<Rec[]>([]);
   const [stats, setStats] = useState<any>(null);
-  const [termsUsed, setTermsUsed] = useState<string[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [answer, setAnswer] = useState<any>(null);
-  const [asking, setAsking] = useState(false);
-  const [note, setNote] = useState('');
+  const [matched, setMatched] = useState<string[] | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
 
-  const flash = (m: string) => {
-    setNote(m);
-    setTimeout(() => setNote(''), 1600);
+  const [loading, setLoading] = useState(true);
+  const [asking, setAsking] = useState(false);
+  const [report, setReport] = useState<any>(null);
+  const [problem, setProblem] = useState('');
+  const [toast, setToast] = useState('');
+
+  const say = (m: string) => {
+    setToast(m);
+    setTimeout(() => setToast(''), 1800);
   };
 
   const loadTags = useCallback(async () => {
@@ -56,45 +71,57 @@ export default function Page() {
     loadTags();
   }, [loadTags]);
 
-  const search = useCallback(async () => {
-    setBusy(true);
-    setError('');
-    setAnswer(null);
-    try {
-      const r = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query,
-          from: from || null,
-          dateFrom: dateFrom || null,
-          dateTo: dateTo || null,
-          tagIds,
-          categories,
-          hasAttachment: attachedOnly,
-          limit: 150,
-        }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'Search failed');
-      setRows(d.rows);
-      setStats(d.stats);
-      setTermsUsed(d.termsUsed);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }, [query, from, dateFrom, dateTo, tagIds, categories, attachedOnly]);
+  const run = useCallback(
+    async (opts: { feed?: boolean } = {}) => {
+      setLoading(true);
+      setProblem('');
+      setReport(null);
+      setOpen(null);
+      try {
+        const payload = opts.feed
+          ? { query: '', limit: 60 }
+          : {
+              query,
+              from: sender || null,
+              dateFrom: dateFrom || null,
+              dateTo: dateTo || null,
+              tagIds,
+              categories: cats,
+              hasAttachment: attached,
+              limit: 200,
+            };
+        const r = await fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'The search did not complete');
+        setRows(d.rows);
+        setStats(d.stats);
+        setMatched(opts.feed ? null : d.termsUsed);
+      } catch (e: any) {
+        setProblem(e.message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [query, sender, dateFrom, dateTo, tagIds, cats, attached]
+  );
 
   useEffect(() => {
-    search();
+    run({ feed: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function ask() {
+  function switchTo(next: 'feed' | 'search') {
+    setMode(next);
+    run({ feed: next === 'feed' });
+  }
+
+  async function writeFinding() {
     setAsking(true);
-    setError('');
+    setProblem('');
     try {
       const r = await fetch('/api/ask', {
         method: 'POST',
@@ -102,10 +129,10 @@ export default function Page() {
         body: JSON.stringify({ question: query || 'Summarise these records.', rows, stats }),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'Could not build a finding');
-      setAnswer(d);
+      if (!r.ok) throw new Error(d.error || 'Could not write a finding');
+      setReport(d);
     } catch (e: any) {
-      setError(e.message);
+      setProblem(e.message);
     } finally {
       setAsking(false);
     }
@@ -113,11 +140,6 @@ export default function Page() {
 
   async function toggleTag(rec: Rec, tag: Tag) {
     const on = rec.tags.some((t) => t.id === tag.id);
-    await fetch('/api/tags', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: on ? 'detach' : 'attach', emailId: rec.id, tagId: tag.id }),
-    });
     setRows((prev) =>
       prev.map((r) =>
         r.id === rec.id
@@ -125,10 +147,15 @@ export default function Page() {
           : r
       )
     );
+    await fetch('/api/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: on ? 'detach' : 'attach', emailId: rec.id, tagId: tag.id }),
+    });
     loadTags();
   }
 
-  async function newTag() {
+  async function addLabel() {
     const name = prompt('Name the label');
     if (!name?.trim()) return;
     await fetch('/api/tags', {
@@ -141,47 +168,157 @@ export default function Page() {
 
   const copy = (text: string, msg: string) => {
     navigator.clipboard.writeText(text);
-    flash(msg);
+    say(msg);
   };
 
-  const unsupported = stats ? stats.total - stats.withAttachment : 0;
+  // Feed groups by day; search stays as one flat run so counts read straight.
+  const grouped = useMemo(() => {
+    if (mode !== 'feed') return null;
+    const out: { day: string; items: Rec[] }[] = [];
+    for (const r of rows) {
+      const key = String(r.sentAt).slice(0, 10);
+      const last = out[out.length - 1];
+      if (last && last.day === key) last.items.push(r);
+      else out.push({ day: key, items: [r] });
+    }
+    return out;
+  }, [rows, mode]);
+
+  const hostile = rows.filter((r) => r.category === 'hostile').length;
+  const unlabelled = rows.filter((r) => !r.category).length;
+  const bare = stats ? stats.total - stats.withAttachment : 0;
+
+  const record = (r: Rec) => {
+    const isOpen = open === r.id;
+    return (
+      <article
+        className="rec"
+        key={r.id}
+        data-cat={r.category || 'null'}
+        onClick={() => setOpen(isOpen ? null : r.id)}
+      >
+        <div className="edge" />
+
+        <div className="stamp">
+          <span className="ref mono">{r.ref}</span>
+          <span className="date mono">{shortDate(r.sentAt)}</span>
+        </div>
+
+        <div className="core">
+          <div className="subject">{r.subject || 'No subject'}</div>
+          <div className="who">{r.from}</div>
+          {!isOpen && <div className="snip">{r.snippet}</div>}
+          {!isOpen && r.tags.length > 0 && (
+            <div className="marks">
+              {r.tags.map((t) => (
+                <span className="mark" key={t.id} style={{ color: t.color }}>
+                  {t.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flank">
+          <div className="clip" data-none={!r.hasAttachment}>
+            {r.hasAttachment ? r.attachments.map((a) => a.filename).join(', ') : 'nothing attached'}
+          </div>
+        </div>
+
+        {isOpen && (
+          <div className="full" onClick={(e) => e.stopPropagation()}>
+            <p className="body">{r.body || r.snippet}</p>
+
+            <div className="tagline">
+              <span>Labels</span>
+              {tags.map((t) => {
+                const on = r.tags.some((x) => x.id === t.id);
+                return (
+                  <button key={t.id} className="pill" data-on={on} onClick={() => toggleTag(r, t)}>
+                    <span className="dot" style={{ background: t.color }} />
+                    {t.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="tools">
+              <button className="btn ghost tiny" onClick={() => copy(`[REF# ${r.ref}]`, `${r.ref} copied`)}>
+                Copy {r.ref}
+              </button>
+              <a className="btn ghost tiny" href={r.link} target="_blank" rel="noreferrer">
+                Open in Gmail
+              </a>
+              <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
+                {longDate(r.sentAt)} · {r.fromAddr}
+              </span>
+            </div>
+          </div>
+        )}
+      </article>
+    );
+  };
 
   return (
     <>
-      <header className="masthead">
-        <h1>Casefile</h1>
-        <span className="sub">{note || (stats ? `${stats.total} records in view` : '')}</span>
-      </header>
+      <div className="band">
+        <div className="band-inner">
+          <h1>Casefile</h1>
+          <div className="tally">
+            <div>
+              <b>{stats ? stats.total : '—'}</b>
+              in view
+            </div>
+            <div className="hot">
+              <b>{hostile}</b>
+              hostile
+            </div>
+            <div>
+              <b>{bare}</b>
+              nothing attached
+            </div>
+            {unlabelled > 0 && (
+              <div>
+                <b>{unlabelled}</b>
+                unlabelled
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
-      <div className="frame">
-        <aside className="rail">
+      <div className="tabbar">
+        <div className="tabbar-inner">
+          <button className="tab" data-on={mode === 'feed'} onClick={() => switchTo('feed')}>
+            What has arrived
+          </button>
+          <button className="tab" data-on={mode === 'search'} onClick={() => switchTo('search')}>
+            Search the record
+          </button>
+        </div>
+      </div>
+
+      <div className="shell">
+        <aside className="panel rail">
+          <h2>{mode === 'feed' ? 'Jump to a search' : 'Narrow it down'}</h2>
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              search();
+              setMode('search');
+              run();
             }}
           >
             <div className="field">
               <label htmlFor="q">Words to look for</label>
-              <input
-                id="q"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="damp, moho, chronic"
-              />
+              <input id="q" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="damp, moho" />
             </div>
 
             <div className="field">
-              <label htmlFor="sender">Sender contains</label>
-              <input
-                id="sender"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                placeholder="part of an address"
-              />
+              <label htmlFor="s">Sender contains</label>
+              <input id="s" value={sender} onChange={(e) => setSender(e.target.value)} placeholder="part of an address" />
             </div>
 
-            <div className="field row2">
+            <div className="field pair">
               <div>
                 <label htmlFor="d1">From</label>
                 <input id="d1" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
@@ -194,19 +331,17 @@ export default function Page() {
 
             <div className="field">
               <label>Kind of message</label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {CATEGORIES.map((c) => (
+              <div className="pills">
+                {CATS.map((c) => (
                   <button
                     type="button"
-                    key={c}
-                    className="chip"
-                    data-on={categories.includes(c)}
-                    style={{ color: categories.includes(c) ? 'var(--blue)' : undefined }}
-                    onClick={() =>
-                      setCategories((p) => (p.includes(c) ? p.filter((x) => x !== c) : [...p, c]))
-                    }
+                    key={c.key}
+                    className="pill"
+                    data-on={cats.includes(c.key)}
+                    onClick={() => setCats((p) => (p.includes(c.key) ? p.filter((x) => x !== c.key) : [...p, c.key]))}
                   >
-                    {c}
+                    <span className="dot" style={{ background: c.color }} />
+                    {c.label}
                   </button>
                 ))}
               </div>
@@ -214,25 +349,22 @@ export default function Page() {
 
             <div className="field">
               <label>Labels</label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <div className="pills">
                 {tags.map((t) => (
                   <button
                     type="button"
                     key={t.id}
-                    className="chip"
+                    className="pill"
                     data-on={tagIds.includes(t.id)}
-                    style={{ color: tagIds.includes(t.id) ? t.color : undefined }}
-                    onClick={() =>
-                      setTagIds((p) => (p.includes(t.id) ? p.filter((x) => x !== t.id) : [...p, t.id]))
-                    }
+                    onClick={() => setTagIds((p) => (p.includes(t.id) ? p.filter((x) => x !== t.id) : [...p, t.id]))}
                   >
                     <span className="dot" style={{ background: t.color }} />
                     {t.name}
-                    {t.uses ? <span className="mono" style={{ opacity: 0.6 }}>{t.uses}</span> : null}
+                    {t.uses ? <span className="count">{t.uses}</span> : null}
                   </button>
                 ))}
-                <button type="button" className="chip" onClick={newTag}>
-                  Add a label
+                <button type="button" className="pill" onClick={addLabel}>
+                  New label
                 </button>
               </div>
             </div>
@@ -241,67 +373,66 @@ export default function Page() {
               <label htmlFor="att">Attachments</label>
               <select
                 id="att"
-                value={attachedOnly === null ? '' : String(attachedOnly)}
-                onChange={(e) =>
-                  setAttachedOnly(e.target.value === '' ? null : e.target.value === 'true')
-                }
+                value={attached === null ? '' : String(attached)}
+                onChange={(e) => setAttached(e.target.value === '' ? null : e.target.value === 'true')}
               >
-                <option value="">Any</option>
+                <option value="">Either way</option>
                 <option value="true">Something attached</option>
                 <option value="false">Nothing attached</option>
               </select>
             </div>
 
-            <button className="btn" type="submit" disabled={busy} style={{ width: '100%' }}>
-              {busy ? 'Searching' : 'Search records'}
+            <button className="btn" type="submit" disabled={loading} style={{ width: '100%' }}>
+              {loading ? 'Looking' : 'Search records'}
             </button>
           </form>
         </aside>
 
-        <main className="main">
-          {error && <div className="error">{error}</div>}
+        <main>
+          {problem && <div className="warn">{problem}</div>}
 
-          {stats && (
-            <section className="finding">
-              <p>
+          {mode === 'search' && stats && !loading && (
+            <section className="panel finding">
+              <p className="headline">
                 {stats.total === 0 ? (
-                  'No records match these filters.'
+                  'Nothing matches those filters.'
                 ) : (
                   <>
                     <span className="n">{stats.total}</span>
                     {stats.total === 1 ? ' message' : ' messages'}
                     {stats.firstSent && (
                       <>
-                        , between <span className="n">{day(stats.firstSent)}</span> and{' '}
-                        <span className="n">{day(stats.lastSent)}</span>
+                        , between <span className="n">{longDate(stats.firstSent)}</span> and{' '}
+                        <span className="n">{longDate(stats.lastSent)}</span>
                       </>
                     )}
                     .{' '}
-                    {unsupported === stats.total
-                      ? 'None had a document attached.'
-                      : `${stats.withAttachment} of them had a document attached.`}
+                    {bare === stats.total ? (
+                      <span className="none">None had a document attached.</span>
+                    ) : (
+                      <>
+                        <span className="n">{stats.withAttachment}</span> had a document attached.
+                      </>
+                    )}
                   </>
                 )}
               </p>
-              {termsUsed && termsUsed.length > 0 && (
-                <div className="terms">
-                  Matched on: {termsUsed.join(', ')}
-                </div>
+
+              {matched && matched.length > 0 && (
+                <div className="matched">Searched for: {matched.join(', ')}</div>
               )}
+
               {stats.total > 0 && (
-                <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-                  <button className="btn quiet" onClick={ask} disabled={asking}>
-                    {asking ? 'Reading the records' : 'Write a finding from these'}
+                <div className="acts">
+                  <button className="btn" onClick={writeFinding} disabled={asking}>
+                    {asking ? 'Reading the records' : 'Write a finding'}
                   </button>
                   <button
-                    className="btn quiet"
+                    className="btn ghost"
                     onClick={() =>
                       copy(
                         rows
-                          .map(
-                            (r) =>
-                              `[REF# ${r.ref}] ${String(r.sentAt).slice(0, 10)} | ${r.subject || ''}`
-                          )
+                          .map((r) => `[REF# ${r.ref}] ${String(r.sentAt).slice(0, 10)} | ${r.subject || ''}`)
                           .join('\n'),
                         'Reference list copied'
                       )
@@ -314,29 +445,27 @@ export default function Page() {
             </section>
           )}
 
-          {answer && (
-            <section className="answer">
-              <h2>Finding</h2>
-              <p>{answer.finding}</p>
-              {answer.evidence_note && <p>{answer.evidence_note}</p>}
-              {answer.timeline?.length > 0 && (
+          {report && (
+            <section className="panel report">
+              <h3>Finding</h3>
+              <p>{report.finding}</p>
+              {report.evidence_note && <p>{report.evidence_note}</p>}
+
+              {report.timeline?.length > 0 && (
                 <ol>
-                  {answer.timeline.map((t: any, i: number) => (
+                  {report.timeline.map((t: any, i: number) => (
                     <li key={i}>
                       <span className="mono">{t.ref}</span> {t.date} — {t.what}
                     </li>
                   ))}
                 </ol>
               )}
-              {answer.reply_draft && (
+
+              {report.reply_draft && (
                 <>
-                  <h2>Suggested reply</h2>
-                  <div className="draft">{answer.reply_draft}</div>
-                  <button
-                    className="btn quiet"
-                    style={{ marginTop: 10 }}
-                    onClick={() => copy(answer.reply_draft, 'Draft copied')}
-                  >
+                  <h3>Suggested reply</h3>
+                  <div className="draft">{report.reply_draft}</div>
+                  <button className="btn ghost tiny" onClick={() => copy(report.reply_draft, 'Draft copied')}>
                     Copy the draft
                   </button>
                 </>
@@ -344,63 +473,39 @@ export default function Page() {
             </section>
           )}
 
-          <section className="ledger">
-            {rows.length === 0 && !busy && (
-              <p className="empty">
-                Nothing here yet. If you have not run the ingest worker, start there — the ledger
-                fills up as messages arrive.
+          {loading && (
+            <div className="panel stack">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div className="ghostrow" key={i} />
+              ))}
+            </div>
+          )}
+
+          {!loading && rows.length === 0 && (
+            <div className="panel blank">
+              <strong>Nothing to show</strong>
+              <p>
+                {mode === 'feed'
+                  ? 'No messages have been stored yet. Run the ingest worker and they will appear here.'
+                  : 'Try fewer filters, or a different word. The sidebar shows which words were actually searched.'}
               </p>
-            )}
+            </div>
+          )}
 
-            {rows.map((r) => (
-              <article className="rec" key={r.id} data-cat={r.category || 'fluff'}>
-                <button
-                  className="ref mono"
-                  title="Copy this reference"
-                  onClick={() => copy(`[REF# ${r.ref}]`, `${r.ref} copied`)}
-                >
-                  {r.ref}
-                </button>
-                <span className="when mono">{day(r.sentAt)}</span>
+          {!loading && grouped && grouped.map((g) => (
+            <div key={g.day}>
+              <div className="daymark">{dayLabel(g.day)}</div>
+              <div className="panel stack">{g.items.map(record)}</div>
+            </div>
+          ))}
 
-                <div>
-                  <div className="subject">{r.subject || '(no subject)'}</div>
-                  <div className="snip">{r.snippet}</div>
-                  <div className="meta">
-                    <span style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>{r.fromAddr}</span>
-                    {tags.map((t) => {
-                      const on = r.tags.some((x) => x.id === t.id);
-                      return (
-                        <button
-                          key={t.id}
-                          className="chip"
-                          data-on={on}
-                          style={{ color: on ? t.color : 'var(--ink-soft)', opacity: on ? 1 : 0.55 }}
-                          onClick={() => toggleTag(r, t)}
-                        >
-                          <span className="dot" style={{ background: t.color }} />
-                          {t.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="side">
-                  <span className="paper" data-none={!r.hasAttachment}>
-                    {r.hasAttachment
-                      ? r.attachments.map((a) => a.filename).join(', ')
-                      : 'nothing attached'}
-                  </span>
-                  <a href={r.link} target="_blank" rel="noreferrer">
-                    Open in Gmail
-                  </a>
-                </div>
-              </article>
-            ))}
-          </section>
+          {!loading && !grouped && rows.length > 0 && (
+            <div className="panel stack">{rows.map(record)}</div>
+          )}
         </main>
       </div>
+
+      {toast && <div className="toast">{toast}</div>}
     </>
   );
 }

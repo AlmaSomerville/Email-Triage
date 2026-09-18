@@ -84,12 +84,13 @@ export async function POST(req: Request) {
         fromAddr: r.from_addr,
         subject: r.subject,
         snippet: r.snippet,
+        body: (r.body_text || '').slice(0, 12000),
         category: r.category,
         events: asArray(r.events),
         tags: asArray(r.tags),
         attachments: asArray(r.attachments),
         hasAttachment: r.has_real_attachment,
-        link: gmailLink(r.message_id),
+        link: gmailLink(r.gm_msgid, r.message_id),
       })),
     });
   } catch (e: any) {

@@ -68,13 +68,15 @@ async function upsert(input) {
   const res = await sql`
     insert into emails ${sql(
       rows,
-      'message_id', 'imap_uid', 'folder', 'from_addr', 'from_name', 'to_addrs',
-      'sent_at', 'subject', 'body_text', 'has_real_attachment', 'attachments',
-      'attachment_text'
+      'message_id', 'gm_msgid', 'gm_thrid', 'imap_uid', 'folder', 'from_addr',
+      'from_name', 'to_addrs', 'sent_at', 'subject', 'body_text',
+      'has_real_attachment', 'attachments', 'attachment_text'
     )}
     on conflict (message_id) do update set
       folder = excluded.folder,
-      imap_uid = excluded.imap_uid
+      imap_uid = excluded.imap_uid,
+      gm_msgid = coalesce(excluded.gm_msgid, emails.gm_msgid),
+      gm_thrid = coalesce(excluded.gm_thrid, emails.gm_thrid)
     returning (xmax = 0) as inserted
   `;
   return res.filter((r) => r.inserted).length;
@@ -120,7 +122,11 @@ async function runOnce() {
   for (const uid of todo) {
     if (MAX && processed >= MAX) break;
     try {
-      const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+      const msg = await client.fetchOne(
+        String(uid),
+        { source: true, emailId: true, threadId: true },
+        { uid: true }
+      );
       if (!msg?.source) continue;
 
       const parsed = await simpleParser(msg.source);
@@ -129,6 +135,8 @@ async function runOnce() {
 
       buffer.push({
         message_id: messageId,
+        gm_msgid: msg.emailId ? String(msg.emailId) : null,
+        gm_thrid: msg.threadId ? String(msg.threadId) : null,
         imap_uid: uid,
         folder: FOLDER,
         from_addr: parsed.from?.value?.[0]?.address?.toLowerCase() || 'unknown',

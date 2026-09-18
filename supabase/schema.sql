@@ -105,7 +105,7 @@ create or replace function search_emails(
 returns table (
   id bigint, ref text, message_id text, sent_at timestamptz,
   from_addr text, from_name text, subject text, snippet text,
-  has_real_attachment boolean, attachments jsonb, category text,
+  has_real_attachment boolean, attachments jsonb, category text, body_text text, gm_msgid text,
   events jsonb, tags jsonb, rank real,
   total_count bigint, first_sent timestamptz, last_sent timestamptz, with_attachment bigint
 )
@@ -145,7 +145,7 @@ begin
   )
   select m.id, m.ref, m.message_id, m.sent_at, m.from_addr, m.from_name,
          m.subject, m.snippet, m.has_real_attachment, m.attachments,
-         m.category, m.events,
+         m.category, m.body_text, m.gm_msgid, m.events,
          coalesce((select jsonb_agg(jsonb_build_object('id', tg.id, 'name', tg.name, 'color', tg.color)
                                     order by tg.name)
                    from email_tags et join tags tg on tg.id = et.tag_id

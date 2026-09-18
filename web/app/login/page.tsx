@@ -18,6 +18,7 @@ export default function Login() {
 
   return (
     <div className="gate">
+      <div className="panel">
       <h1>Casefile</h1>
       <p>This holds private correspondence. Enter the password to continue.</p>
       <form onSubmit={submit}>
@@ -25,9 +26,10 @@ export default function Login() {
           <label htmlFor="pw">Password</label>
           <input id="pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
         </div>
-        {error && <div className="error">{error}</div>}
+        {error && <div className="warn">{error}</div>}
         <button className="btn" type="submit" style={{ width: '100%' }}>Sign in</button>
       </form>
+      </div>
     </div>
   );
 }
