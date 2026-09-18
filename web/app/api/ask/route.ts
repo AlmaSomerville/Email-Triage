@@ -28,6 +28,19 @@ Return JSON only:
   "reply_draft": "A reply of at most two sentences. Brief, firm, factual, friendly in tone. No questions unless one is logistically required. No history, no adjectives about the other person, no defensiveness."
 }`;
 
+/** Pulls the first {...} out of a reply that arrived wrapped in prose or fences. */
+function salvageJson(text: string | undefined) {
+  if (!text) return null;
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const { question, rows, stats } = await req.json();
@@ -58,31 +71,49 @@ text: ${(r.snippet || '').slice(0, 400)}`
       )
       .join('\n\n');
 
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+    const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+    const messages = [
+      { role: 'system', content: SYSTEM },
+      { role: 'user', content: `QUESTION\n${question}\n\nCOUNTS\n${counts}\n\nRECORDS\n${records}` },
+    ];
+
+    // Two goes: strict JSON, then plain text with the object salvaged out of it.
+    // Reasoning models spend their budget thinking and can return empty content
+    // under strict JSON mode, which surfaces as a 400 with no explanation.
+    let lastDetail = '';
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const payload: any = {
+        model,
         temperature: 0.1,
         max_tokens: 1600,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user', content: `QUESTION\n${question}\n\nCOUNTS\n${counts}\n\nRECORDS\n${records}` },
-        ],
-      }),
-    });
+        messages,
+      };
+      if (attempt === 1) payload.response_format = { type: 'json_object' };
+      if (/gpt-oss|reason|qwq|deepseek-r/i.test(model)) payload.reasoning_effort = 'low';
 
-    if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      return NextResponse.json({ error: `Groq returned ${res.status}. ${detail}` }, { status: 502 });
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await res.text();
+      if (!res.ok) {
+        lastDetail = `Groq returned ${res.status}. ${text.slice(0, 220)}`;
+        // A missing model will never succeed on a retry.
+        if (res.status === 404 || res.status === 401) break;
+        continue;
+      }
+
+      const parsed = salvageJson(JSON.parse(text).choices?.[0]?.message?.content);
+      if (parsed) return NextResponse.json(parsed);
+      lastDetail = 'The model replied, but not with anything readable.';
     }
 
-    const data = await res.json();
-    return NextResponse.json(JSON.parse(data.choices[0].message.content));
+    return NextResponse.json({ error: lastDetail }, { status: 502 });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
