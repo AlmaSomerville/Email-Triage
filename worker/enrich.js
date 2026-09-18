@@ -26,20 +26,39 @@ const MODEL = process.env.GROQ_TRIAGE_MODEL || 'llama-3.1-8b-instant';
 const GAP = Math.ceil(60000 / RPM);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const SYSTEM = `You label one email from a co-parenting inbox. It may be in Spanish or English.
+const OWNER = (process.env.OWNER_EMAIL || '').toLowerCase().trim();
 
-Reply with a single JSON object and nothing else, in exactly this shape:
+const SYSTEM = `You label one message from a co-parenting correspondence. It may be in Spanish or English.
 
-{"category":"logistics","needs_reply":true,"events":[{"date":"2026-08-17","time":"09:00","place":"school","what":"handover"}],"summary":"one neutral sentence in English"}
+The message is marked SENT BY OWNER or RECEIVED. A message sent by the owner records
+what the owner asserted; a received one records what the other party asserted. Neither
+establishes that the thing asserted is true. Never treat either as fact.
 
-category is one of: logistics, legal, hostile, fluff.
-- logistics: handovers, dates, school, travel, practical arrangements
-- legal: solicitors, court, formal demands, anything referencing proceedings
-- hostile: insults, blame, pressure, accusations with no practical request
-- fluff: no action and no assertion of fact
+Reply with one JSON object and nothing else, in exactly this shape:
 
-events may be an empty array. Use null for a date or time that is not stated; never guess one.
-Keep summary under 20 words. Add no other keys. Write nothing outside the JSON object.`;
+{"topics":["handover","schooling"],"tone":"practical","needs_reply":true,"deadline":"2026-10-31","events":[{"date":"2026-10-31","time":"09:00","place":"school gate","what":"collection"}],"flags":{"allegation":false,"cites_agreement":true,"names_professional":false,"money_demand":false},"summary":"one neutral sentence in English naming who said what"}
+
+topics: any that apply, from handover, schooling, health, money, travel, contact,
+legal_process, other. "contact" is about calls and messaging itself. "legal_process"
+means solicitors, court, formal demands or prescribed procedure.
+
+tone: exactly one of
+- practical: a request, an arrangement, or information
+- allegation: asserts something about the child, the home, health, money or conduct
+- hostile: blame, insult or pressure, with no practical request
+- formal: written in legal register, or reserving or asserting rights
+
+deadline: a date by which something must be done, if one is stated. Otherwise null.
+Never infer a deadline from a date merely mentioned.
+
+flags:
+- allegation: asserts a disputable fact about the child, the home, health or conduct
+- cites_agreement: refers to the convenio, court order, or an agreed arrangement
+- names_professional: names a doctor, teacher, solicitor, police or other authority
+- money_demand: asks for, or disputes, a payment
+
+summary: under 22 words, naming the sender as "the owner" or by name. Never guess a
+date. Use null, not a guess, for anything not stated.`;
 
 /** Pulls the first {...} out of a reply that arrived wrapped in prose or fences. */
 function salvageJson(text) {
@@ -70,7 +89,8 @@ async function callGroq(row, attempt) {
       { role: 'system', content: SYSTEM },
       {
         role: 'user',
-        content: `From: ${row.from_name || ''} <${row.from_addr}>
+        content: `${OWNER && (row.from_addr || '').toLowerCase() === OWNER ? 'SENT BY OWNER' : 'RECEIVED'}
+From: ${row.from_name || ''} <${row.from_addr}>
 Sent: ${new Date(row.sent_at).toISOString()}
 Subject: ${row.subject || '(none)'}
 Attachments: ${row.has_real_attachment ? JSON.stringify(row.attachments) : 'none'}
@@ -111,13 +131,32 @@ ${body || '(empty message)'}`,
   return parsed;
 }
 
+const TOPICS = ['handover', 'schooling', 'health', 'money', 'travel', 'contact', 'legal_process', 'other'];
+const TONES = ['practical', 'allegation', 'hostile', 'formal'];
+
 async function classifyOnce(row, attempt) {
   const out = await callGroq(row, attempt);
-  const cat = ['logistics', 'legal', 'hostile', 'fluff'].includes(out.category)
-    ? out.category
-    : null;
-  if (!cat) throw new Error(`unusable category: ${JSON.stringify(out.category)}`);
-  return { cat, events: Array.isArray(out.events) ? out.events : [], summary: out.summary || '' };
+  const tone = TONES.includes(out.tone) ? out.tone : null;
+  if (!tone) throw new Error(`unusable tone: ${JSON.stringify(out.tone)}`);
+
+  const topics = (Array.isArray(out.topics) ? out.topics : []).filter((t) => TOPICS.includes(t));
+  const flags = {
+    allegation: !!out.flags?.allegation,
+    cites_agreement: !!out.flags?.cites_agreement,
+    names_professional: !!out.flags?.names_professional,
+    money_demand: !!out.flags?.money_demand,
+    needs_reply: !!out.needs_reply,
+  };
+  const deadline = /^\d{4}-\d{2}-\d{2}$/.test(out.deadline || '') ? out.deadline : null;
+
+  return {
+    cat: tone,
+    topics: topics.length ? topics : ['other'],
+    flags,
+    deadline,
+    events: Array.isArray(out.events) ? out.events : [],
+    summary: out.summary || '',
+  };
 }
 
 async function classify(row) {
@@ -158,16 +197,20 @@ for (;;) {
     if (MAX && done >= MAX) break;
     const started = Date.now();
     try {
-      const { cat, events, summary } = await classify(row);
+      const { cat, topics, flags, deadline, events, summary } = await classify(row);
       await sql`
         update emails set
           category = ${cat},
+          topics = ${topics},
+          flags = ${sql.json(flags)},
+          deadline = ${deadline},
           events = ${sql.json(events)},
           enriched_at = now(),
           enrich_attempts = enrich_attempts + 1
         where id = ${row.id}
       `;
-      console.log(`${row.ref}  ${cat.padEnd(9)} ${summary.slice(0, 68)}`);
+      const mark = deadline ? ` due ${deadline}` : '';
+      console.log(`${row.ref}  ${cat.padEnd(10)} ${topics.join('/').padEnd(18)} ${summary.slice(0, 52)}${mark}`);
     } catch (e) {
       failed++;
       // Left unlabelled on purpose. A wrong label is worse than none: it would

@@ -18,13 +18,36 @@ type Rec = {
   attachments: { filename: string }[];
   hasAttachment: boolean;
   link: string;
+  topics: string[];
+  flags: Record<string, boolean>;
+  deadline: string | null;
+  sentByOwner: boolean;
 };
 
-const CATS = [
-  { key: 'logistics', label: 'Logistics', color: 'var(--moss)' },
-  { key: 'legal', label: 'Legal', color: 'var(--blue)' },
+const TONES = [
+  { key: 'practical', label: 'Practical', color: 'var(--moss)' },
+  { key: 'allegation', label: 'Allegation', color: 'var(--amber)' },
   { key: 'hostile', label: 'Hostile', color: 'var(--oxblood)' },
-  { key: 'fluff', label: 'Nothing in it', color: 'var(--ink-3)' },
+  { key: 'formal', label: 'Formal', color: 'var(--blue)' },
+];
+
+const TOPICS = [
+  { key: 'handover', label: 'Handover' },
+  { key: 'schooling', label: 'School' },
+  { key: 'health', label: 'Health' },
+  { key: 'money', label: 'Money' },
+  { key: 'travel', label: 'Travel' },
+  { key: 'contact', label: 'Contact' },
+  { key: 'legal_process', label: 'Legal process' },
+];
+
+const FLAGS = [
+  { key: '', label: 'Anything' },
+  { key: 'needs_reply', label: 'Waiting on a reply' },
+  { key: 'allegation', label: 'Makes an allegation' },
+  { key: 'cites_agreement', label: 'Cites the agreement' },
+  { key: 'names_professional', label: 'Names a professional' },
+  { key: 'money_demand', label: 'About a payment' },
 ];
 
 const dayLabel = (d: string) =>
@@ -39,6 +62,10 @@ export default function Page() {
 
   const [query, setQuery] = useState('');
   const [sender, setSender] = useState('');
+  const [recipient, setRecipient] = useState('');
+  const [direction, setDirection] = useState<'' | 'sent' | 'received'>('');
+  const [topics, setTopics] = useState<string[]>([]);
+  const [flag, setFlag] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [tagIds, setTagIds] = useState<number[]>([]);
@@ -54,6 +81,8 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [asking, setAsking] = useState(false);
   const [report, setReport] = useState<any>(null);
+  const [drafts, setDrafts] = useState<Record<number, any>>({});
+  const [drafting, setDrafting] = useState<number | null>(null);
   const [problem, setProblem] = useState('');
   const [toast, setToast] = useState('');
 
@@ -79,10 +108,14 @@ export default function Page() {
       setOpen(null);
       try {
         const payload = opts.feed
-          ? { query: '', limit: 60 }
+          ? { query: '', limit: 60, direction: 'received' }
           : {
               query,
               from: sender || null,
+              to: recipient || null,
+              direction: direction || null,
+              topics,
+              flag: flag || null,
               dateFrom: dateFrom || null,
               dateTo: dateTo || null,
               tagIds,
@@ -106,7 +139,7 @@ export default function Page() {
         setLoading(false);
       }
     },
-    [query, sender, dateFrom, dateTo, tagIds, cats, attached]
+    [query, sender, recipient, direction, topics, flag, dateFrom, dateTo, tagIds, cats, attached]
   );
 
   useEffect(() => {
@@ -135,6 +168,25 @@ export default function Page() {
       setProblem(e.message);
     } finally {
       setAsking(false);
+    }
+  }
+
+  async function draftReply(rec: Rec) {
+    setDrafting(rec.id);
+    setProblem('');
+    try {
+      const r = await fetch('/api/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: rec.id }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Could not draft a reply');
+      setDrafts((p) => ({ ...p, [rec.id]: d }));
+    } catch (e: any) {
+      setProblem(e.message);
+    } finally {
+      setDrafting(null);
     }
   }
 
@@ -206,10 +258,18 @@ export default function Page() {
 
         <div className="core">
           <div className="subject">{r.subject || 'No subject'}</div>
-          <div className="who">{r.from}</div>
+          <div className="who">
+            {r.sentByOwner ? 'You wrote this' : r.from}
+            {r.deadline && <span className="due"> · due {shortDate(r.deadline)}</span>}
+          </div>
           {!isOpen && <div className="snip">{r.snippet}</div>}
-          {!isOpen && r.tags.length > 0 && (
+          {!isOpen && (r.tags.length > 0 || r.topics.length > 0) && (
             <div className="marks">
+              {r.topics.map((t) => (
+                <span className="mark topic" key={t}>
+                  {TOPICS.find((x) => x.key === t)?.label || t}
+                </span>
+              ))}
               {r.tags.map((t) => (
                 <span className="mark" key={t.id} style={{ color: t.color }}>
                   {t.name}
@@ -243,6 +303,11 @@ export default function Page() {
             </div>
 
             <div className="tools">
+              {!r.sentByOwner && (
+                <button className="btn tiny" onClick={() => draftReply(r)} disabled={drafting === r.id}>
+                  {drafting === r.id ? 'Drafting' : drafts[r.id] ? 'Draft again' : 'Draft a reply'}
+                </button>
+              )}
               <button className="btn ghost tiny" onClick={() => copy(`[REF# ${r.ref}]`, `${r.ref} copied`)}>
                 Copy {r.ref}
               </button>
@@ -253,6 +318,30 @@ export default function Page() {
                 {longDate(r.sentAt)} · {r.fromAddr}
               </span>
             </div>
+
+            {drafts[r.id] && (
+              <div className="replies">
+                <p className="reading">{drafts[r.id].incoming_summary}</p>
+
+                {drafts[r.id].needs_reply === false ? (
+                  <p className="reading quiet">
+                    {drafts[r.id].no_reply_rationale || 'Nothing here needs an answer.'}
+                  </p>
+                ) : (
+                  (drafts[r.id].drafts || []).map((d: any, i: number) => (
+                    <div className="option" key={i}>
+                      <div className="option-head">
+                        <span>{d.label}</span>
+                        <button className="btn ghost tiny" onClick={() => copy(d.body, 'Draft copied')}>
+                          Copy
+                        </button>
+                      </div>
+                      <div className="draft">{d.body}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
         )}
       </article>
@@ -318,21 +407,75 @@ export default function Page() {
               <input id="s" value={sender} onChange={(e) => setSender(e.target.value)} placeholder="part of an address" />
             </div>
 
+            <div className="field">
+              <label htmlFor="rcp">Recipient contains</label>
+              <input id="rcp" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="who it went to" />
+            </div>
+
+            <div className="field">
+              <label>Direction</label>
+              <div className="pills">
+                {[
+                  { k: '', l: 'Both' },
+                  { k: 'received', l: 'To you' },
+                  { k: 'sent', l: 'From you' },
+                ].map((d) => (
+                  <button
+                    type="button"
+                    key={d.k}
+                    className="pill"
+                    data-on={direction === d.k}
+                    onClick={() => setDirection(d.k as any)}
+                  >
+                    {d.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="field pair">
               <div>
-                <label htmlFor="d1">From</label>
+                <label htmlFor="d1">Sent after</label>
                 <input id="d1" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
               </div>
               <div>
-                <label htmlFor="d2">To</label>
+                <label htmlFor="d2">Sent before</label>
                 <input id="d2" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
               </div>
             </div>
 
             <div className="field">
-              <label>Kind of message</label>
+              <label>What it is about</label>
               <div className="pills">
-                {CATS.map((c) => (
+                {TOPICS.map((t) => (
+                  <button
+                    type="button"
+                    key={t.key}
+                    className="pill"
+                    data-on={topics.includes(t.key)}
+                    onClick={() =>
+                      setTopics((p) => (p.includes(t.key) ? p.filter((x) => x !== t.key) : [...p, t.key]))
+                    }
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="field">
+              <label htmlFor="flg">Only messages that</label>
+              <select id="flg" value={flag} onChange={(e) => setFlag(e.target.value)}>
+                {FLAGS.map((f) => (
+                  <option key={f.key} value={f.key}>{f.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field">
+              <label>How it is written</label>
+              <div className="pills">
+                {TONES.map((c) => (
                   <button
                     type="button"
                     key={c.key}

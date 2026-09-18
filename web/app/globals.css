@@ -328,3 +328,23 @@ a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 2
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ============ topics, deadlines, reply options ============ */
+.mark.topic { color: var(--ink-3); border-color: var(--rule); background: #f6f8f9; }
+.due { color: var(--oxblood); font-weight: 500; }
+
+.replies { margin-top: 18px; border-top: 1px solid var(--rule); padding-top: 14px; }
+.reading { font-size: 13.5px; color: var(--ink-2); margin: 0 0 14px; max-width: 58ch; }
+.reading.quiet { color: var(--ink-3); font-style: italic; }
+
+.option { margin-bottom: 14px; max-width: 58ch; }
+.option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}

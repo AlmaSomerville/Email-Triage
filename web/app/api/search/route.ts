@@ -50,10 +50,17 @@ export async function POST(req: Request) {
       ? (b.query?.trim() ? b.query.trim().split(/[\s,]+/) : null)
       : await expand(b.query);
 
+    const owner = (process.env.OWNER_EMAIL || '').toLowerCase().trim() || null;
+
     const rows = await sql`
       select * from search_emails(
         ${terms as any},
         ${b.from || null},
+        ${b.to || null},
+        ${owner},
+        ${b.direction || null},
+        ${(b.topics?.length ? b.topics : null) as any},
+        ${b.flag || null},
         ${b.dateFrom || null},
         ${b.dateTo || null},
         ${(b.tagIds?.length ? b.tagIds : null) as any},
@@ -87,6 +94,11 @@ export async function POST(req: Request) {
         body: (r.body_text || '').slice(0, 12000),
         category: r.category,
         events: asArray(r.events),
+        topics: r.topics || [],
+        flags: r.flags || {},
+        deadline: r.deadline,
+        toAddrs: r.to_addrs || [],
+        sentByOwner: !!owner && String(r.from_addr).toLowerCase() === owner,
         tags: asArray(r.tags),
         attachments: asArray(r.attachments),
         hasAttachment: r.has_real_attachment,
